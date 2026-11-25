@@ -1,29 +1,35 @@
 package land.beezz.map;
 
+import com.mojang.blaze3d.platform.InputConstants;
+import com.mojang.blaze3d.platform.Window;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.screens.ConfirmLinkScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
 
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
- * The map on the whole screen. Drag to move, the wheel zooms around the cursor, a click on a player (on the map or in the
- * list) keeps them in the middle. The map itself is drawn in real window pixels, like the site's canvas, so its blocks
+ * The map on the whole screen. Hold a mouse button and move to drag it (WASD and the arrows move it too), the wheel and
+ * +/- zoom, a click on a player keeps them in the middle, the right button opens a menu: a mark of your own here, or a
+ * place for everyone suggested on the site. The map is drawn in real window pixels, like the site's canvas, so its blocks
  * stay square and sharp at every zoom; the panels use the game's own GUI scale.
  */
 public final class MapScreen extends Screen {
     // [ink, soft, gold, panel, fog] for each theme: the site's colours and the parchment of the mod
-    private static final int[] BEEZZ = {0xFFE7EEFB, 0xFF9AA8BF, 0xFFFACC15, 0xE6141A24, 0xFF0B0F17};
-    private static final int[] PAPYRUS = {0xFF3A2616, 0xFF6B4A2B, 0xFFB88C2C, 0xEEF6ECD0, 0xFFDECCA0};
+    static final int[] BEEZZ = {0xFFE7EEFB, 0xFF9AA8BF, 0xFFFACC15, 0xE6141A24, 0xFF0B0F17};
+    static final int[] PAPYRUS = {0xFF3A2616, 0xFF6B4A2B, 0xFFB88C2C, 0xEEF6ECD0, 0xFFDECCA0};
     private static final int GREEN = 0xFF4ADE80;
 
-    private record Hit(int x, int y, int w, int h, Runnable action) {
+    private record Hit(int x, int y, int w, int h, Runnable action, String id) {
         boolean in(double mx, double my) {
             return mx >= x && my >= y && mx < x + w && my < y + h;
         }
@@ -34,45 +40,48 @@ public final class MapScreen extends Screen {
         long t0;
     }
 
-    // the view stays as it was when the map is opened again
-    static String world = "world";
-    static double cx, cz, s = -1; // the block in the middle; window pixels per block
+    /** The view stays as it was when the map is opened again. */
+    static final MapView view = new MapView();
     static String follow;
     private static boolean placed;
+    private static boolean settingsOpen;
+    private static int placesScroll;
 
     private final List<Hit> hits = new ArrayList<>();
-    private final Map<String, Glide> glides = new HashMap<>();
-    private List<Data.Player> seenPlayers;
+    private static final Map<String, Glide> glides = new HashMap<>();
+    private static List<Data.Player> seenPlayers;
+    // dragging lasts from the press to the release and reads the cursor every frame instead of trusting move events:
+    // some input mods deliver them differently
     private boolean dragging;
-    private double downX, downY;
+    private double lastRawX, lastRawY, dragDist;
+    private int dragButton = -1;
+    /** The right-click menu: where it opened (GUI pixels) and the block under it. */
+    private int menuX = -1, menuY;
+    private int menuBX, menuBZ;
+    private Marks.Mark menuMark;
 
     public MapScreen() {
         super(Component.translatable("beezzmap.title"));
     }
 
-    @Override
-    protected void init() {
-        Minecraft mc = Minecraft.getInstance();
-        if (!placed || s <= 0) {
-            s = 1;
-            if (BeezzMap.onBeezzLand(mc) && mc.player != null) {
-                String w = BeezzMap.worldName(mc);
-                if (Data.KNOWN.contains(w)) world = w;
-                cx = mc.player.getX();
-                cz = mc.player.getZ();
-                s = 2;
-            }
+    static int[] theme() {
+        return "papyrus".equals(BeezzMap.config.theme) ? PAPYRUS : BEEZZ;
+    }
+
+    /** Opened with the key: on the server, it starts where you are. */
+    static MapScreen open(Minecraft mc) {
+        boolean here = BeezzMap.onBeezzLand(mc) && mc.player != null;
+        if (!placed) {
+            view.s = here ? 1 : 0.5;
             placed = true;
         }
-        if (BeezzMap.onBeezzLand(mc) && mc.player != null && follow == null) { // opened on the server: start where you are
+        if (here && follow == null) {
             String w = BeezzMap.worldName(mc);
-            if (Data.KNOWN.contains(w) && !w.equals(world)) {
-                world = w;
-                Tiles.clear();
-            }
-            cx = mc.player.getX();
-            cz = mc.player.getZ();
+            if (Data.KNOWN.contains(w)) setWorld(w);
+            view.cx = mc.player.getX();
+            view.cz = mc.player.getZ();
         }
+        return new MapScreen();
     }
 
     @Override
@@ -80,33 +89,8 @@ public final class MapScreen extends Screen {
         return false; // the map updates live; in single player the game keeps going too
     }
 
-    private int[] theme() {
-        return "papyrus".equals(BeezzMap.config.theme) ? PAPYRUS : BEEZZ;
-    }
-
-    private int maxOut() {
-        return 3; // Pl3xMap's zoom levels 0..3 on BeezzLand
-    }
-
-    private int gs() {
+    private static int gs() {
         return Math.max(1, Minecraft.getInstance().getWindow().getGuiScale());
-    }
-
-    // window pixels <-> blocks
-    private double pxW() {
-        return Minecraft.getInstance().getWindow().getWidth();
-    }
-
-    private double pxH() {
-        return Minecraft.getInstance().getWindow().getHeight();
-    }
-
-    private double sx(double x) {
-        return (x - cx) * s + pxW() / 2;
-    }
-
-    private double sz(double z) {
-        return (z - cz) * s + pxH() / 2;
     }
 
     // ------------------------------------------------------------------ drawing
@@ -119,182 +103,216 @@ public final class MapScreen extends Screen {
     @Override
     public void extractRenderState(GuiGraphicsExtractor g, int mx, int my, float pt) {
         Minecraft mc = Minecraft.getInstance();
-        Data.tick(world);
+        Window win = mc.getWindow();
+        Data.tick(view.world);
         Tiles.pump();
         Icons.pump();
         Icons.trimFog();
         hits.clear();
         int[] th = theme();
-        Data.World w = Data.world(world);
-        if (w == null && !Data.worlds.isEmpty()) w = Data.world(world = Data.worlds.get(0).name());
+        if (Data.world(view.world) == null && !Data.worlds.isEmpty()) setWorld(Data.worlds.get(0).name());
         glide();
+        dragStep(mc, win);
+        keysStep(mc);
         if (follow != null) {
             double[] p = playerPos(follow);
             if (p == null) follow = null;
             else {
-                cx += (p[0] - cx) * .2;
-                cz += (p[1] - cz) * .2;
+                view.cx += (p[0] - view.cx) * .2;
+                view.cz += (p[1] - view.cz) * .2;
             }
         }
+        String me = BeezzMap.onBeezzLand(mc) && mc.player != null ? mc.player.getName().getString() : null;
+        boolean meHere = me != null && view.world.equals(BeezzMap.worldName(mc));
 
         // ---- the map, in window pixels
+        view.x0 = 0;
+        view.y0 = 0;
+        view.w = win.getWidth();
+        view.h = win.getHeight();
+        int gs = gs();
         g.pose().pushMatrix();
-        g.pose().scale(1f / gs(), 1f / gs());
-        if (w != null) {
-            int want = Math.max(0, Math.min(maxOut(), (int) Math.ceil(Math.log(1 / s) / Math.log(2) - 0.001)));
-            for (int n = maxOut(); n > want; n--) drawLevel(g, w, n, n == maxOut()); // coarse ones first: never an empty hole
-            drawLevel(g, w, want, true);
-            if (BeezzMap.config.fog) drawFog(g, th[4]);
-            drawGrid(g);
+        g.pose().scale(1f / gs, 1f / gs);
+        view.drawTiles(g);
+        if (BeezzMap.config.fog) {
+            List<double[]> open = new ArrayList<>();
+            for (Data.Player p : Data.players) if (p.world().equals(view.world)) open.add(new double[] {p.x(), p.z()});
+            if (meHere) open.add(new double[] {mc.player.getX(), mc.player.getZ()});
+            view.drawFog(g, th[4], open);
         }
+        view.drawGrid(g, th == BEEZZ);
         g.pose().popMatrix();
 
         // ---- what is on the map, in GUI pixels
-        Data.Point hovered = null;
-        int gs = gs();
-        for (Data.Point p : Data.points) {
-            if (!p.world().equals(world)) continue;
-            int x = (int) Math.round(sx(p.x() + .5) / gs), y = (int) Math.round(sz(p.z() + .5) / gs);
-            if (x < -60 || y < -20 || x > width + 60 || y > height + 30) continue;
-            Icons.Pic ic = Icons.icon(p.icon(), p.color());
-            if (ic != null) g.blit(ic.id(), x - 8, y - 8, x + 8, y + 8, 0, 1, 0, 1);
-            else g.fill(x - 3, y - 3, x + 3, y + 3, th[2]);
-            String name = font.plainSubstrByWidth(p.name(), 110);
-            int nw = font.width(name);
-            g.fill(x - nw / 2 - 2, y + 9, x + nw / 2 + 2, y + 19, th[3]);
-            g.text(font, name, x - nw / 2, y + 10, th[0], false);
-            if (mx >= x - 9 && mx <= x + 9 && my >= y - 9 && my <= y + 19) hovered = p;
+        List<Component> tip = null;
+        if (BeezzMap.config.showPlaces) {
+            for (Data.Point p : Data.points) {
+                if (!p.world().equals(view.world)) continue;
+                int x = gx(p.x() + .5), y = gy(p.z() + .5);
+                if (x < -60 || y < -20 || x > width + 60 || y > height + 30) continue;
+                Icons.Pic ic = Icons.icon(p.icon(), p.color());
+                if (ic != null) g.blit(ic.id(), x - 8, y - 8, x + 8, y + 8, 0, 1, 0, 1);
+                else g.fill(x - 3, y - 3, x + 3, y + 3, th[2]);
+                label(g, p.name(), x, y + 9, th[0], th);
+                if (mx >= x - 9 && mx <= x + 9 && my >= y - 9 && my <= y + 19) {
+                    tip = new ArrayList<>();
+                    tip.add(Component.literal(p.name()).withColor(0xFACC15));
+                    if (!p.description().isBlank()) tip.add(Component.literal(p.description()));
+                    tip.add(Component.literal(p.x() + ", " + p.y() + ", " + p.z()).withColor(0x9AA8BF));
+                    if (!p.by().isBlank()) tip.add(Component.translatable("beezzmap.by", p.by()).withColor(0x9AA8BF));
+                }
+            }
         }
-        String me = BeezzMap.onBeezzLand(mc) && mc.player != null ? mc.player.getName().getString() : null;
-        Data.Player hoverPl = null;
-        for (Data.Player pl : Data.players) {
-            if (!pl.world().equals(world) || pl.name().equalsIgnoreCase(me)) continue;
-            double[] p = playerPos(pl.name());
-            int x = (int) Math.round(sx(p[0]) / gs), y = (int) Math.round(sz(p[1]) / gs);
-            if (x < -40 || y < -20 || x > width + 40 || y > height + 30) continue;
-            drawHead(g, pl.name(), x, y, follow != null && follow.equals(pl.name()) ? th[2] : 0xFFFFFFFF, th);
-            String nick = pl.name();
-            hits.add(new Hit(x - 7, y - 7, 14, 14, () -> followPlayer(nick)));
-            if (mx >= x - 7 && mx <= x + 7 && my >= y - 7 && my <= y + 7) hoverPl = pl;
+        if (BeezzMap.config.showMarks) {
+            for (Marks.Mark m : Marks.all()) {
+                if (!m.world.equals(view.world)) continue;
+                int x = gx(m.x + .5), y = gy(m.z + .5);
+                if (x < -60 || y < -20 || x > width + 60 || y > height + 30) continue;
+                drawMark(g, x, y, m.color, 6);
+                label(g, m.name, x, y + 8, 0xFF000000 | m.color, th);
+                if (mx >= x - 7 && mx <= x + 7 && my >= y - 7 && my <= y + 18) {
+                    tip = List.of(Component.literal(m.name).withColor(m.color),
+                            Component.literal(m.x + ", " + m.y + ", " + m.z).withColor(0x9AA8BF),
+                            Component.translatable("beezzmap.mark.hint").withColor(0x9AA8BF));
+                }
+            }
         }
-        if (me != null && world.equals(BeezzMap.worldName(mc))) { // you, live from the game, not two seconds late
-            int x = (int) Math.round(sx(mc.player.getX()) / gs), y = (int) Math.round(sz(mc.player.getZ()) / gs);
-            drawHead(g, me, x, y, th[2], th);
+        if (BeezzMap.config.showPlayers) {
+            for (Data.Player pl : Data.players) {
+                if (!pl.world().equals(view.world) || pl.name().equalsIgnoreCase(me)) continue;
+                double[] p = playerPos(pl.name());
+                if (p == null) continue;
+                int x = gx(p[0]), y = gy(p[1]);
+                String nick = pl.name();
+                boolean fol = nick.equals(follow);
+                if (x < 8 || y < 8 || x > width - 8 || y > height - 8) { // off the screen: a head at the edge, pointing to them
+                    // the edge between the panels: under the hint at the top, above the buttons at the bottom
+                    int ex = Math.max(150, Math.min(width - 150, x)), ey = Math.max(36, Math.min(height - 40, y));
+                    double ang = Math.atan2(y - ey, x - ex);
+                    int ax = ex + (int) Math.round(Math.cos(ang) * 10), ay = ey + (int) Math.round(Math.sin(ang) * 10);
+                    g.fill(ax - 2, ay - 2, ax + 2, ay + 2, th[2]);
+                    drawFace(g, nick, ex, ey, 5, fol ? th[2] : 0xFFFFFFFF);
+                    hits.add(new Hit(ex - 6, ey - 6, 12, 12, () -> followPlayer(nick), ""));
+                    if (Math.abs(mx - ex) <= 6 && Math.abs(my - ey) <= 6) tip = List.of(Component.literal(nick),
+                            Component.translatable("beezzmap.away", (int) Math.hypot(p[0] - view.cx, p[1] - view.cz)).withColor(0x9AA8BF));
+                    continue;
+                }
+                drawFace(g, nick, x, y, 6, fol ? th[2] : 0xFFFFFFFF);
+                label(g, nick, x, y + 9, fol ? th[2] : th[0], th);
+                hits.add(new Hit(x - 7, y - 7, 14, 14, () -> followPlayer(nick), ""));
+                if (mx >= x - 7 && mx <= x + 7 && my >= y - 7 && my <= y + 7)
+                    tip = List.of(Component.literal(nick), Component.literal((int) pl.x() + ", " + (int) pl.z()).withColor(0x9AA8BF));
+            }
+        }
+        if (meHere) { // you, live from the game, not two seconds late
+            int x = gx(mc.player.getX()), y = gy(mc.player.getZ());
+            arrow(g, x, y, mc.player.getYRot(), 7, th[2]);
         }
 
         drawPlaque(g, mx, my, th);
         drawOnline(g, mx, my, th, me);
         drawBottom(g, mx, my, th, me);
-
-        if (hovered != null) {
-            List<Component> lines = new ArrayList<>();
-            lines.add(Component.literal(hovered.name()).withColor(0xFACC15));
-            if (!hovered.description().isBlank()) lines.add(Component.literal(hovered.description()));
-            lines.add(Component.literal(hovered.x() + ", " + hovered.y() + ", " + hovered.z()).withColor(0x9AA8BF));
-            if (!hovered.by().isBlank()) lines.add(Component.translatable("beezzmap.by", hovered.by()).withColor(0x9AA8BF));
-            g.setComponentTooltipForNextFrame(font, lines, mx, my);
-        } else if (hoverPl != null) {
-            g.setComponentTooltipForNextFrame(font, List.of(Component.literal(hoverPl.name()),
-                    Component.literal((int) hoverPl.x() + ", " + (int) hoverPl.z()).withColor(0x9AA8BF)), mx, my);
-        }
+        if (settingsOpen) drawSettings(g, mx, my, th);
+        if (menuX >= 0) drawMenu(g, mx, my, th, me);
+        else if (tip != null && !dragging) g.setComponentTooltipForNextFrame(font, tip, mx, my);
         super.extractRenderState(g, mx, my, pt);
     }
 
-    private void drawLevel(GuiGraphicsExtractor g, Data.World w, int n, boolean load) {
-        double size = Tiles.SIZE << n;
-        double x0 = cx - pxW() / 2 / s, z0 = cz - pxH() / 2 / s, x1 = cx + pxW() / 2 / s, z1 = cz + pxH() / 2 / s;
-        for (int tx = (int) Math.floor(x0 / size); tx <= Math.floor(x1 / size); tx++) {
-            for (int tz = (int) Math.floor(z0 / size); tz <= Math.floor(z1 / size); tz++) {
-                Tiles.Tile t = Tiles.get(BeezzMap.config.theme, w.name(), w.renderer(), maxOut(), n, tx, tz, load);
-                if (t == null || t.tex == null) continue;
-                // whole pixels, or thin seams show between the tiles
-                int l = (int) Math.round(sx(tx * size)), tp = (int) Math.round(sz(tz * size));
-                int r = (int) Math.round(sx((tx + 1) * size)), b = (int) Math.round(sz((tz + 1) * size));
-                g.blit(t.tex, l, tp, r, b, 0, 1, 0, 1);
-            }
-        }
+    private int gx(double x) {
+        return (int) Math.round(view.sx(x) / gs());
     }
 
-    private void drawFog(GuiGraphicsExtractor g, int color) {
-        Map<String, byte[]> fog = Data.fogOf(world);
-        if (fog == null) return;
-        // where players stand right now is open too: the fog file is rewritten only every ten minutes
-        Map<String, java.util.TreeSet<Integer>> live = new HashMap<>();
-        for (Data.Player p : Data.players) if (p.world().equals(world)) openAround(live, (int) Math.floor(p.x()) >> 4, (int) Math.floor(p.z()) >> 4);
-        Minecraft mc = Minecraft.getInstance();
-        if (BeezzMap.onBeezzLand(mc) && mc.player != null && world.equals(BeezzMap.worldName(mc))) openAround(live, mc.player.getBlockX() >> 4, mc.player.getBlockZ() >> 4);
-        double x0 = cx - pxW() / 2 / s, z0 = cz - pxH() / 2 / s, x1 = cx + pxW() / 2 / s, z1 = cz + pxH() / 2 / s;
-        for (int rx = (int) Math.floor(x0 / 512); rx <= Math.floor(x1 / 512); rx++) {
-            for (int rz = (int) Math.floor(z0 / 512); rz <= Math.floor(z1 / 512); rz++) {
-                int l = (int) Math.round(sx(rx * 512.0)), t = (int) Math.round(sz(rz * 512.0));
-                int r = (int) Math.round(sx((rx + 1) * 512.0)), b = (int) Math.round(sz((rz + 1) * 512.0));
-                String key = rx + "_" + rz;
-                byte[] bits = fog.get(key);
-                java.util.TreeSet<Integer> extra = live.get(key);
-                if (extra != null) {
-                    bits = bits == null ? new byte[128] : bits.clone();
-                    for (int i : extra) bits[i >> 3] |= (byte) (1 << (i & 7));
-                    key = key + extra;
-                }
-                if (bits == null) g.fill(l, t, r, b, color);
-                else g.blit(Icons.fog(world, BeezzMap.config.theme, key, bits, color).id(), l, t, r, b, 0, 1, 0, 1);
-            }
-        }
+    private int gy(double z) {
+        return (int) Math.round(view.sz(z) / gs());
     }
 
-    /** Chunks within 3 of this one, as region -> bit numbers. */
-    private static void openAround(Map<String, java.util.TreeSet<Integer>> live, int chx, int chz) {
-        for (int dx = -3; dx <= 3; dx++) for (int dz = -3; dz <= 3; dz++) {
-            if (dx * dx + dz * dz > 10) continue;
-            int x = chx + dx, z = chz + dz;
-            live.computeIfAbsent((x >> 5) + "_" + (z >> 5), k -> new java.util.TreeSet<>()).add((x & 31) + (z & 31) * 32);
-        }
+    private void label(GuiGraphicsExtractor g, String text, int x, int y, int color, int[] th) {
+        String s = font.plainSubstrByWidth(text, 110);
+        int w = font.width(s);
+        g.fill(x - w / 2 - 2, y, x + w / 2 + 2, y + 10, th[3]);
+        g.text(font, s, x - w / 2, y + 1, color, false);
     }
 
-    /** The mod's faint chunk grid, only up close. */
-    private void drawGrid(GuiGraphicsExtractor g) {
-        if (s < 4) return;
-        boolean dark = theme() == BEEZZ;
-        int c = dark ? (s >= 8 ? 0x1CFFFFFF : 0x12FFFFFF) : (s >= 8 ? 0x223A2616 : 0x163A2616);
-        double x0 = cx - pxW() / 2 / s, z0 = cz - pxH() / 2 / s, x1 = cx + pxW() / 2 / s, z1 = cz + pxH() / 2 / s;
-        int H = (int) pxH(), W = (int) pxW();
-        for (double x = Math.floor(x0 / 16) * 16; x <= x1; x += 16) {
-            int px = (int) Math.round(sx(x));
-            g.fill(px, 0, px + 1, H, c);
-        }
-        for (double z = Math.floor(z0 / 16) * 16; z <= z1; z += 16) {
-            int pz = (int) Math.round(sz(z));
-            g.fill(0, pz, W, pz + 1, c);
-        }
-    }
-
-    private void drawHead(GuiGraphicsExtractor g, String nick, int x, int y, int ring, int[] th) {
-        g.fill(x - 7, y - 7, x + 7, y + 7, ring);
-        g.fill(x - 6, y - 6, x + 6, y + 6, 0xFF000000);
+    static void drawFace(GuiGraphicsExtractor g, String nick, int x, int y, int r, int ring) {
+        g.fill(x - r - 1, y - r - 1, x + r + 1, y + r + 1, ring);
+        g.fill(x - r, y - r, x + r, y + r, 0xFF000000);
         Icons.Pic head = Icons.head(nick);
-        if (head != null) g.blit(head.id(), x - 6, y - 6, x + 6, y + 6, 0, 1, 0, 1);
-        int nw = font.width(nick);
-        g.fill(x - nw / 2 - 2, y + 9, x + nw / 2 + 2, y + 19, th[3]);
-        g.text(font, nick, x - nw / 2, y + 10, ring == th[2] ? th[2] : th[0], false);
+        if (head != null) g.blit(head.id(), x - r, y - r, x + r, y + r, 0, 1, 0, 1);
     }
 
-    /** Top left: the title and the worlds. */
+    /** A pin: a coloured diamond with a dark edge. */
+    static void drawMark(GuiGraphicsExtractor g, int x, int y, int color, int r) {
+        for (int i = -r - 1; i <= r + 1; i++) {
+            int half = r + 1 - Math.abs(i);
+            g.fill(x - half, y + i, x + half + 1, y + i + 1, 0xFF1A1A1A);
+        }
+        for (int i = -r; i <= r; i++) {
+            int half = r - Math.abs(i);
+            g.fill(x - half, y + i, x + half + 1, y + i + 1, 0xFF000000 | color);
+        }
+        g.fill(x - 1, y - 1, x + 2, y + 2, 0xFFFFFFFF);
+    }
+
+    /** Where you look: an arrow turned by the player's yaw (0 = south, as in the game). */
+    static void arrow(GuiGraphicsExtractor g, int x, int y, float yaw, int r, int color) {
+        g.pose().pushMatrix();
+        g.pose().translate(x, y);
+        g.pose().rotate((float) Math.toRadians(yaw + 180));
+        for (int i = -r; i <= r; i++) { // a triangle pointing up (north before turning)
+            int half = (int) Math.round((i + r) * 0.45);
+            g.fill(-half - 1, i - 1, half + 2, i + 1, 0xFF000000);
+        }
+        for (int i = -r + 1; i <= r - 1; i++) {
+            int half = (int) Math.round((i + r) * 0.4);
+            g.fill(-half, i, half + 1, i + 1, color);
+        }
+        g.pose().popMatrix();
+    }
+
+    /** Top left: the title, the worlds, and the places of this world (public ones and your own marks). */
     private void drawPlaque(GuiGraphicsExtractor g, int mx, int my, int[] th) {
-        int x = 6, y = 6, w = 118;
-        int rows = Math.max(1, Data.worlds.size());
-        g.fill(x, y, x + w, y + 20 + rows * 13, th[3]);
+        int x = 6, y = 6, w = 128;
+        int ry = y + 19;
+        int worldsH = Math.max(1, Data.worlds.size()) * 12;
+        g.fill(x, y, x + w, y + 22 + worldsH, th[3]);
         g.fill(x, y, x + w, y + 1, th[2]);
         g.text(font, Component.translatable("beezzmap.title"), x + 6, y + 6, th[2], false);
-        int ry = y + 19;
         for (Data.World dw : Data.worlds) {
-            boolean on = dw.name().equals(world), hov = mx >= x && mx < x + w && my >= ry && my < ry + 13;
-            if (on) g.fill(x + 3, ry, x + w - 3, ry + 12, 0x40FACC15);
-            else if (hov) g.fill(x + 3, ry, x + w - 3, ry + 12, 0x20FFFFFF);
+            boolean on = dw.name().equals(view.world), hov = mx >= x && mx < x + w && my >= ry && my < ry + 12;
+            if (on) g.fill(x + 3, ry, x + w - 3, ry + 11, 0x40FACC15);
+            else if (hov) g.fill(x + 3, ry, x + w - 3, ry + 11, 0x20FFFFFF);
             g.text(font, Component.translatable("beezzmap.world." + dw.name()), x + 8, ry + 2, on ? th[2] : th[0], false);
             String name = dw.name();
-            hits.add(new Hit(x, ry, w, 13, () -> switchWorld(name)));
-            ry += 13;
+            hits.add(new Hit(x, ry, w, 12, () -> setWorld(name), "world:" + name));
+            ry += 12;
         }
+
+        // places
+        record Row(String name, int color, Runnable go, boolean mine) {}
+        List<Row> rows = new ArrayList<>();
+        for (Data.Point p : Data.points) if (p.world().equals(view.world))
+            rows.add(new Row(p.name(), th[0], () -> flyTo(p.x() + .5, p.z() + .5), false));
+        for (Marks.Mark m : Marks.all()) if (m.world.equals(view.world))
+            rows.add(new Row(m.name, 0xFF000000 | m.color, () -> flyTo(m.x + .5, m.z + .5), true));
+        int py = y + 26 + worldsH, fit = Math.max(1, (height - 60 - py) / 12);
+        placesScroll = Math.max(0, Math.min(placesScroll, rows.size() - fit));
+        int shown = Math.min(rows.size(), fit);
+        g.fill(x, py, x + w, py + 20 + Math.max(1, shown) * 12, th[3]);
+        g.fill(x, py, x + w, py + 1, th[2]);
+        g.text(font, Component.translatable("beezzmap.places", rows.size()), x + 6, py + 6, th[0], false);
+        int r = py + 18;
+        if (rows.isEmpty()) g.text(font, Component.translatable("beezzmap.places.none"), x + 8, r + 2, th[1], false);
+        for (int i = placesScroll; i < placesScroll + shown; i++) {
+            Row row = rows.get(i);
+            boolean hov = mx >= x && mx < x + w && my >= r && my < r + 12;
+            if (hov) g.fill(x + 3, r, x + w - 3, r + 11, 0x20FFFFFF);
+            if (row.mine()) g.fill(x + 8, r + 3, x + 13, r + 8, row.color());
+            else g.fill(x + 8, r + 4, x + 12, r + 8, th[2]);
+            g.text(font, font.plainSubstrByWidth(row.name(), w - 24), x + 17, r + 2, row.mine() ? row.color() : th[0], false);
+            hits.add(new Hit(x, r, w, 12, row.go(), "place:" + row.name()));
+            r += 12;
+        }
+        if (rows.size() > shown) g.text(font, (placesScroll + 1) + "–" + (placesScroll + shown) + " / " + rows.size(), x + w - 50, py + 6, th[1], false);
     }
 
     /** Top right: everyone online (Pl3xMap's list: whoever wrote /map hide is not there). */
@@ -318,34 +336,28 @@ public final class MapScreen extends Screen {
             if (head != null) g.blit(head.id(), x + 7, ry + 1, x + 17, ry + 11, 0, 1, 0, 1);
             else g.fill(x + 7, ry + 1, x + 17, ry + 11, 0xFF303848);
             g.text(font, font.plainSubstrByWidth(pl.name(), 72), x + 21, ry + 2, fol || pl.name().equalsIgnoreCase(me) ? th[2] : th[0], false);
-            if (!pl.world().equals(world)) {
-                String tag = switch (pl.world()) {
-                    case "world" -> "☀";
-                    case "world_nether", "world_minecraft_farm_nether" -> "🔥";
-                    case "world_the_end" -> "✦";
-                    default -> "⚒";
-                };
-                g.text(font, tag, x + w - 10 - font.width(tag), ry + 2, th[1], false);
+            if (!pl.world().equals(view.world)) {
+                String tag = Component.translatable("beezzmap.world.short." + pl.world()).getString();
+                g.text(font, tag, x + w - 6 - font.width(tag), ry + 2, th[1], false);
             }
             String nick = pl.name();
-            hits.add(new Hit(x, ry, w, 13, () -> followPlayer(nick)));
+            hits.add(new Hit(x, ry, w, 13, () -> followPlayer(nick), "player:" + nick));
             ry += 13;
         }
         if (list.size() > shown) g.text(font, "+" + (list.size() - shown), x + 8, ry + 1, th[1], false);
     }
 
-    /** Bottom: scale, the block under the cursor, how fresh the data is, and the switches. */
+    /** Bottom: scale, the block under the cursor, how fresh the data is, and the buttons. */
     private void drawBottom(GuiGraphicsExtractor g, int mx, int my, int[] th, String me) {
         int y = height - 20, gs = gs();
-        // scale bar
+        double s = view.s;
         int len = 1;
         for (int v : new int[] {1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000}) if (v * s / gs <= 70) len = v;
         int bar = (int) Math.round(len * s / gs);
-        double bx = mx * gs, bz = my * gs;
-        int wx = (int) Math.floor((bx - pxW() / 2) / s + cx), wz = (int) Math.floor((bz - pxH() / 2) / s + cz);
+        int wx = (int) Math.floor(view.bx(mx * gs)), wz = (int) Math.floor(view.bz(my * gs));
         Component status;
         if (Data.down) status = Component.translatable("beezzmap.down");
-        else if (Data.syncedAt == 0 || Tiles.loading() > 0 && Data.blockColor == null) status = Component.translatable("beezzmap.loading");
+        else if (Data.syncedAt == 0) status = Component.translatable("beezzmap.loading");
         else status = Component.translatable("beezzmap.synced", (System.currentTimeMillis() - Data.syncedAt) / 1000);
         String coords = "X " + wx + "  Z " + wz;
         int w = Math.max(bar + 60, Math.max(font.width(coords), font.width(status))) + 14;
@@ -357,56 +369,117 @@ public final class MapScreen extends Screen {
         g.text(font, coords, 12, y - 9, th[0], false);
         g.text(font, status, 12, y + 2, Data.down ? 0xFFF87171 : th[1], false);
 
-        // switches, right to left
-        int bx2 = width - 6;
-        bx2 = button(g, mx, my, bx2, y - 2, Component.translatable("beezzmap.fog").append(BeezzMap.config.fog ? ": ✔" : ": ✖"), th, () -> {
-            BeezzMap.config.fog = !BeezzMap.config.fog;
-            BeezzMap.save();
-        });
-        bx2 = button(g, mx, my, bx2, y - 2, Component.translatable("beezzmap.theme").append(": ")
-                .append(Component.translatable("beezzmap.theme." + BeezzMap.config.theme)), th, () -> {
-            BeezzMap.config.theme = "papyrus".equals(BeezzMap.config.theme) ? "beezz" : "papyrus";
-            BeezzMap.save();
-            Tiles.clear();
-        });
+        int bx = width - 6;
+        bx = button(g, mx, my, bx, y - 2, Component.translatable("beezzmap.settings"), th, () -> settingsOpen = !settingsOpen, "settings");
+        bx = button(g, mx, my, bx, y - 2, Component.literal("+"), th, () -> view.zoomAt(view.w / 2, view.h / 2, 1.5, true), "zoomin");
+        bx = button(g, mx, my, bx, y - 2, Component.literal("−"), th, () -> view.zoomAt(view.w / 2, view.h / 2, 1 / 1.5, true), "zoomout");
         Minecraft mc = Minecraft.getInstance();
-        if (me != null) button(g, mx, my, bx2, y - 2, Component.translatable("beezzmap.me"), th, () -> {
+        if (me != null) button(g, mx, my, bx, y - 2, Component.translatable("beezzmap.me"), th, () -> {
             follow = null;
             String w0 = BeezzMap.worldName(mc);
-            if (Data.KNOWN.contains(w0)) switchWorld(w0);
-            cx = mc.player.getX();
-            cz = mc.player.getZ();
-            if (s < 1) s = 2;
-        });
-        if (follow != null) {
-            Component f = Component.translatable("beezzmap.follow", follow);
-            int fw = font.width(f) + 12;
+            if (Data.KNOWN.contains(w0)) setWorld(w0);
+            view.cx = mc.player.getX();
+            view.cz = mc.player.getZ();
+            if (view.s < 1) view.s = 2;
+        }, "me");
+        Component top = follow != null ? Component.translatable("beezzmap.follow", follow) : Component.translatable("beezzmap.hint");
+        int fw = font.width(top) + 12;
+        if (fw < width - 2 * 140) { // between the places and the online list
             g.fill(width / 2 - fw / 2, 6, width / 2 + fw / 2, 20, th[3]);
-            g.text(font, f, width / 2 - fw / 2 + 6, 9, th[2], false);
+            g.text(font, top, width / 2 - fw / 2 + 6, 9, follow != null ? th[2] : th[1], false);
+        }
+    }
+
+    private void drawSettings(GuiGraphicsExtractor g, int mx, int my, int[] th) {
+        BeezzMap.Config c = BeezzMap.config;
+        List<Object[]> rows = new ArrayList<>();
+        rows.add(new Object[] {Component.translatable("beezzmap.theme").append(": ").append(Component.translatable("beezzmap.theme." + c.theme)), (Runnable) () -> {
+            c.theme = "papyrus".equals(c.theme) ? "beezz" : "papyrus";
+            Tiles.clear();
+        }, "theme"});
+        rows.add(new Object[] {onOff("beezzmap.fog", c.fog), (Runnable) () -> c.fog = !c.fog, "fog"});
+        rows.add(new Object[] {onOff("beezzmap.show.places", c.showPlaces), (Runnable) () -> c.showPlaces = !c.showPlaces, "places"});
+        rows.add(new Object[] {onOff("beezzmap.show.marks", c.showMarks), (Runnable) () -> c.showMarks = !c.showMarks, "marks"});
+        rows.add(new Object[] {onOff("beezzmap.show.players", c.showPlayers), (Runnable) () -> c.showPlayers = !c.showPlayers, "players"});
+        rows.add(new Object[] {onOff("beezzmap.minimap", c.minimap), (Runnable) () -> c.minimap = !c.minimap, "minimap"});
+        rows.add(new Object[] {Component.translatable("beezzmap.minimap.size").append(": ").append(Component.translatable("beezzmap.minimap.size." + c.minimapSize)),
+                (Runnable) () -> c.minimapSize = (c.minimapSize + 1) % 3, "minisize"});
+        int w = 0;
+        for (Object[] r : rows) w = Math.max(w, font.width((Component) r[0]));
+        w += 20;
+        int x = width - 6 - w, h = 8 + rows.size() * 14, y = height - 26 - h;
+        hits.add(new Hit(x, y, w, h, () -> {}, "")); // a click on the panel between its rows doesn't close it
+        g.fill(x, y, x + w, y + h, th[3]);
+        g.fill(x, y, x + w, y + 1, th[2]);
+        int ry = y + 4;
+        for (Object[] r : rows) {
+            boolean hov = mx >= x && mx < x + w && my >= ry && my < ry + 14;
+            if (hov) g.fill(x + 3, ry, x + w - 3, ry + 13, 0x20FFFFFF);
+            g.text(font, (Component) r[0], x + 10, ry + 3, hov ? th[2] : th[0], false);
+            Runnable a = (Runnable) r[1];
+            hits.add(new Hit(x, ry, w, 14, () -> {
+                a.run();
+                BeezzMap.save();
+            }, "set:" + r[2]));
+            ry += 14;
+        }
+    }
+
+    private static Component onOff(String key, boolean on) {
+        return Component.translatable(key).append(on ? ": ✔" : ": ✖");
+    }
+
+    private void drawMenu(GuiGraphicsExtractor g, int mx, int my, int[] th, String me) {
+        List<Object[]> rows = new ArrayList<>();
+        Minecraft mc = Minecraft.getInstance();
+        if (menuMark != null) {
+            Marks.Mark m = menuMark;
+            rows.add(new Object[] {Component.translatable("beezzmap.mark.edit"), (Runnable) () -> mc.gui.setScreen(new MarkScreen(this, m, false)), "edit"});
+            rows.add(new Object[] {Component.translatable("beezzmap.mark.delete"), (Runnable) () -> Marks.remove(m), "delete"});
         } else {
-            Component hint = Component.translatable("beezzmap.hint");
-            int fw = font.width(hint) + 12;
-            if (fw < width - 2 * 140) { // between the worlds and the online list
-                g.fill(width / 2 - fw / 2, 6, width / 2 + fw / 2, 20, th[3]);
-                g.text(font, hint, width / 2 - fw / 2 + 6, 9, th[1], false);
-            }
+            rows.add(new Object[] {Component.translatable("beezzmap.mark.here"), (Runnable) () -> newMark(menuBX, 64, menuBZ), "markhere"});
+            if (me != null && view.world.equals(BeezzMap.worldName(mc))) rows.add(new Object[] {Component.translatable("beezzmap.mark.mine"),
+                    (Runnable) () -> newMark(mc.player.getBlockX(), mc.player.getBlockY(), mc.player.getBlockZ()), "markme"});
+            rows.add(new Object[] {Component.translatable("beezzmap.suggest"), (Runnable) () -> ConfirmLinkScreen.confirmLinkNow(this,
+                    URI.create(String.format(Locale.ROOT, "%s/map.html#w=%s&x=%d&z=%d&s=3", Api.SITE, view.world, menuBX, menuBZ))), "suggest"});
+        }
+        int w = 0;
+        for (Object[] r : rows) w = Math.max(w, font.width((Component) r[0]));
+        w += 16;
+        int h = 18 + rows.size() * 14;
+        int x = Math.min(menuX, width - w - 4), y = Math.min(menuY, height - h - 4);
+        hits.add(new Hit(x, y, w, h, () -> {}, "")); // a click on the card between its rows doesn't close it
+        g.fill(x, y, x + w, y + h, 0xF0141A24);
+        g.fill(x, y, x + w, y + 1, 0xFFFACC15);
+        g.text(font, menuBX + ", " + menuBZ, x + 8, y + 5, 0xFF9AA8BF, false);
+        int ry = y + 16;
+        for (Object[] r : rows) {
+            boolean hov = mx >= x && mx < x + w && my >= ry && my < ry + 14;
+            if (hov) g.fill(x + 2, ry, x + w - 2, ry + 13, 0x30FACC15);
+            g.text(font, (Component) r[0], x + 8, ry + 3, hov ? 0xFFFACC15 : 0xFFE7EEFB, false);
+            Runnable a = (Runnable) r[1];
+            hits.add(new Hit(x, ry, w, 14, () -> {
+                menuX = -1;
+                a.run();
+            }, "menu:" + r[2]));
+            ry += 14;
         }
     }
 
     /** A button whose right edge is at x; returns where the next one ends. */
-    private int button(GuiGraphicsExtractor g, int mx, int my, int x, int y, Component label, int[] th, Runnable action) {
+    private int button(GuiGraphicsExtractor g, int mx, int my, int x, int y, Component label, int[] th, Runnable action, String id) {
         int w = font.width(label) + 12, l = x - w;
         boolean hov = mx >= l && mx < x && my >= y && my < y + 16;
         g.fill(l, y, x, y + 16, th[3]);
         g.fill(l, y + 15, x, y + 16, hov ? th[2] : th[1]);
         g.text(font, label, l + 6, y + 4, hov ? th[2] : th[0], false);
-        hits.add(new Hit(l, y, w, 16, action));
+        hits.add(new Hit(l, y, w, 16, action, id));
         return l - 4;
     }
 
     // ------------------------------------------------------------------ players gliding between updates
 
-    private void glide() {
+    static void glide() {
         List<Data.Player> now = Data.players;
         if (now == seenPlayers) return;
         long t = System.currentTimeMillis();
@@ -436,38 +509,115 @@ public final class MapScreen extends Screen {
         return new double[] {g.fx + (g.tx - g.fx) * k, g.fz + (g.tz - g.fz) * k};
     }
 
-    private double[] playerPos(String nick) {
+    static double[] playerPos(String nick) {
         Glide g = glides.get(nick);
         return g == null ? null : at(g, System.currentTimeMillis());
     }
 
     // ------------------------------------------------------------------ actions
 
-    private void switchWorld(String w) {
-        if (w.equals(world)) return;
-        world = w;
+    static void setWorld(String w) {
+        if (w.equals(view.world)) return;
+        view.world = w;
         follow = null;
         Tiles.clear();
-        cx = 0;
-        cz = 0;
+        view.cx = 0;
+        view.cz = 0;
     }
 
     void followPlayer(String nick) {
         for (Data.Player p : Data.players) {
             if (!p.name().equals(nick)) continue;
-            if (!p.world().equals(world)) {
-                world = p.world();
-                Tiles.clear();
-            }
+            setWorld(p.world());
             follow = nick;
-            cx = p.x();
-            cz = p.z();
-            if (s < 1) s = 2;
+            view.cx = p.x();
+            view.cz = p.z();
+            if (view.s < 1) view.s = 2;
             return;
         }
     }
 
+    private void flyTo(double x, double z) {
+        follow = null;
+        view.cx = x;
+        view.cz = z;
+        if (view.s < 1.5) view.s = 3;
+    }
+
+    void newMark(int x, int y, int z) {
+        Marks.Mark m = new Marks.Mark();
+        m.world = view.world;
+        m.x = x;
+        m.y = y;
+        m.z = z;
+        m.color = Marks.COLORS[Marks.all().size() % Marks.COLORS.length];
+        Minecraft.getInstance().gui.setScreen(new MarkScreen(this, m, true));
+    }
+
+    private Marks.Mark markAt(double mx, double my) {
+        if (!BeezzMap.config.showMarks) return null;
+        for (Marks.Mark m : Marks.all()) {
+            if (!m.world.equals(view.world)) continue;
+            if (Math.abs(gx(m.x + .5) - mx) <= 7 && Math.abs(gy(m.z + .5) - my) <= 7) return m;
+        }
+        return null;
+    }
+
     // ------------------------------------------------------------------ input
+
+    private void dragStep(Minecraft mc, Window win) {
+        if (!dragging) return;
+        double rx = mc.mouseHandler.xpos(), ry = mc.mouseHandler.ypos();
+        double k = (double) win.getWidth() / Math.max(1, win.getScreenWidth()); // screen coordinates -> framebuffer pixels
+        double dx = (rx - lastRawX) * k, dy = (ry - lastRawY) * k;
+        lastRawX = rx;
+        lastRawY = ry;
+        if (dx != 0 || dy != 0) {
+            dragDist += Math.abs(dx) + Math.abs(dy);
+            if (dragDist > 6) follow = null;
+            if (follow == null) {
+                view.cx -= dx / view.s;
+                view.cz -= dy / view.s;
+            }
+        }
+    }
+
+    /** Held movement keys, from the key events (not polled: input mods may run the keyboard on their own thread). */
+    private final java.util.Set<Integer> held = new java.util.HashSet<>();
+    private static final java.util.Set<Integer> MOVE = java.util.Set.of(InputConstants.KEY_A, InputConstants.KEY_D, InputConstants.KEY_W,
+            InputConstants.KEY_S, InputConstants.KEY_LEFT, InputConstants.KEY_RIGHT, InputConstants.KEY_UP, InputConstants.KEY_DOWN);
+
+    private long lastKeysStep;
+
+    private void keysStep(Minecraft mc) {
+        long now = System.nanoTime();
+        double dt = lastKeysStep == 0 ? 0 : Math.min(0.25, (now - lastKeysStep) / 1e9);
+        lastKeysStep = now;
+        if (mc.gui.screen() != this || held.isEmpty()) return;
+        double step = 900 * dt / view.s; // 900 window pixels a second, whatever the frame rate
+        double dx = 0, dz = 0;
+        if (held.contains(InputConstants.KEY_A) || held.contains(InputConstants.KEY_LEFT)) dx -= step;
+        if (held.contains(InputConstants.KEY_D) || held.contains(InputConstants.KEY_RIGHT)) dx += step;
+        if (held.contains(InputConstants.KEY_W) || held.contains(InputConstants.KEY_UP)) dz -= step;
+        if (held.contains(InputConstants.KEY_S) || held.contains(InputConstants.KEY_DOWN)) dz += step;
+        if (dx != 0 || dz != 0) {
+            follow = null;
+            view.cx += dx;
+            view.cz += dz;
+        }
+    }
+
+    @Override
+    public void tick() {
+        keysStep(Minecraft.getInstance()); // also between frames: frame limiters may skip drawing while the window is idle
+    }
+
+    @Override
+    public boolean keyReleased(KeyEvent e) {
+        if (held.contains(e.input())) keysStep(Minecraft.getInstance()); // the last bit of the press counts too
+        held.remove(e.input());
+        return super.keyReleased(e);
+    }
 
     @Override
     public boolean mouseClicked(MouseButtonEvent e, boolean doubleClick) {
@@ -479,44 +629,59 @@ public final class MapScreen extends Screen {
                     return true;
                 }
             }
-            dragging = true;
-            downX = e.x();
-            downY = e.y();
+        }
+        if (menuX >= 0) { // a click anywhere else closes the menu
+            menuX = -1;
             return true;
         }
-        return super.mouseClicked(e, doubleClick);
+        if (settingsOpen && e.button() == 0) settingsOpen = false;
+        Minecraft mc = Minecraft.getInstance();
+        dragging = true;
+        dragButton = e.button();
+        dragDist = 0;
+        lastRawX = mc.mouseHandler.xpos();
+        lastRawY = mc.mouseHandler.ypos();
+        return true;
     }
 
     @Override
     public boolean mouseReleased(MouseButtonEvent e) {
+        boolean click = dragging && dragDist <= 6 && e.button() == dragButton;
+        if (dragging) dragStep(Minecraft.getInstance(), Minecraft.getInstance().getWindow());
         dragging = false;
-        return super.mouseReleased(e);
+        if (click && e.button() == 1) { // the right button without moving: the menu
+            openMenu(e.x(), e.y());
+            return true;
+        }
+        if (click && e.button() == 0) {
+            Marks.Mark m = markAt(e.x(), e.y());
+            if (m != null) Minecraft.getInstance().gui.setScreen(new MarkScreen(this, m, false));
+        }
+        return true;
+    }
+
+    void openMenu(double x, double y) {
+        menuX = (int) x;
+        menuY = (int) y;
+        menuBX = (int) Math.floor(view.bx(x * gs()));
+        menuBZ = (int) Math.floor(view.bz(y * gs()));
+        menuMark = markAt(x, y);
     }
 
     @Override
     public boolean mouseDragged(MouseButtonEvent e, double dx, double dy) {
-        if (!dragging) return super.mouseDragged(e, dx, dy);
-        if (follow != null && Math.hypot(e.x() - downX, e.y() - downY) > 3) follow = null;
-        cx -= dx * gs() / s;
-        cz -= dy * gs() / s;
-        return true;
+        return dragging; // moved in dragStep, from the cursor itself
     }
 
     @Override
     public boolean mouseScrolled(double mx, double my, double h, double v) {
         if (v == 0) return false;
-        zoomAt(mx * gs(), my * gs(), Math.pow(1.25, v));
-        return true;
-    }
-
-    /** Zoom so the block under this window pixel stays under it. */
-    void zoomAt(double px, double py, double k) {
-        double bx = (px - pxW() / 2) / s + cx, bz = (py - pxH() / 2) / s + cz;
-        s = Math.max(1.0 / (1 << maxOut()) / 2, Math.min(16, s * k));
-        if (follow == null) {
-            cx = bx - (px - pxW() / 2) / s;
-            cz = bz - (py - pxH() / 2) / s;
+        if (mx < 140 && my > 30) { // over the places: scroll the list
+            placesScroll -= (int) Math.signum(v);
+            return true;
         }
+        view.zoomAt(mx * gs(), my * gs(), Math.pow(1.25, v), follow != null);
+        return true;
     }
 
     @Override
@@ -525,16 +690,40 @@ public final class MapScreen extends Screen {
             onClose();
             return true;
         }
+        if (MOVE.contains(e.input())) {
+            if (held.isEmpty()) lastKeysStep = System.nanoTime();
+            held.add(e.input());
+            return true;
+        }
+        if (e.input() == InputConstants.KEY_EQUALS || e.input() == 334 /* numpad + */) {
+            view.zoomAt(view.w / 2, view.h / 2, 1.5, true);
+            return true;
+        }
+        if (e.input() == InputConstants.KEY_MINUS || e.input() == 333 /* numpad - */) {
+            view.zoomAt(view.w / 2, view.h / 2, 1 / 1.5, true);
+            return true;
+        }
+        if (e.input() == InputConstants.KEY_ESCAPE && (menuX >= 0 || settingsOpen)) {
+            menuX = -1;
+            settingsOpen = false;
+            return true;
+        }
         return super.keyPressed(e);
     }
 
-    // for the game test
+    // ------------------------------------------------------------------ for the game test
+
+    /** The middle of the clickable thing with this id, in GUI pixels. */
+    double[] hitCenter(String id) {
+        for (Hit h : hits) if (h.id().equals(id)) return new double[] {h.x() + h.w() / 2.0, h.y() + h.h() / 2.0};
+        return null;
+    }
+
     static void view(String w, double x, double z, double scale) {
-        if (!w.equals(world)) Tiles.clear();
-        world = w;
-        cx = x;
-        cz = z;
-        s = scale;
+        setWorld(w);
+        view.cx = x;
+        view.cz = z;
+        view.s = scale;
         follow = null;
         placed = true;
     }

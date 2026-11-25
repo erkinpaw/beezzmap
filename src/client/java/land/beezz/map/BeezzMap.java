@@ -6,6 +6,7 @@ import com.mojang.blaze3d.platform.InputConstants;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
+import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
@@ -26,12 +27,16 @@ public final class BeezzMap implements ClientModInitializer {
     public static final Logger LOG = LoggerFactory.getLogger("BeezzMap");
     static final String VERSION = FabricLoader.getInstance().getModContainer("beezzmap")
             .map(c -> c.getMetadata().getVersion().getFriendlyString()).orElse("dev");
-    public static KeyMapping openKey;
+    public static KeyMapping openKey, minimapKey, zoomInKey, zoomOutKey;
 
     /** Kept between games in config/beezzmap.json. */
     static final class Config {
         String theme = "beezz";
         boolean fog = true;
+        boolean showPlaces = true, showMarks = true, showPlayers = true;
+        boolean minimap = true;
+        int minimapSize = 1; // 0 small, 1 medium, 2 large
+        double minimapZoom = 1; // window pixels per block
     }
 
     static Config config = new Config();
@@ -48,13 +53,24 @@ public final class BeezzMap implements ClientModInitializer {
         } catch (Exception e) {
             LOG.warn("BeezzMap: config unreadable, using defaults", e);
         }
-        openKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.beezzmap.open", InputConstants.KEY_M,
-                KeyMapping.Category.register(Identifier.fromNamespaceAndPath("beezzmap", "main"))));
+        KeyMapping.Category cat = KeyMapping.Category.register(Identifier.fromNamespaceAndPath("beezzmap", "main"));
+        openKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.beezzmap.open", InputConstants.KEY_M, cat));
+        minimapKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.beezzmap.minimap", InputConstants.KEY_N, cat));
+        zoomInKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.beezzmap.zoomin", InputConstants.KEY_EQUALS, cat));
+        zoomOutKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.beezzmap.zoomout", InputConstants.KEY_MINUS, cat));
         ClientTickEvents.END_CLIENT_TICK.register(mc -> {
             while (openKey.consumeClick()) {
-                if (mc.gui.screen() == null) mc.gui.setScreen(new MapScreen());
+                if (mc.gui.screen() == null) mc.gui.setScreen(MapScreen.open(mc));
             }
+            while (minimapKey.consumeClick()) {
+                config.minimap = !config.minimap;
+                save();
+            }
+            while (zoomInKey.consumeClick()) Minimap.zoom(1.5);
+            while (zoomOutKey.consumeClick()) Minimap.zoom(1 / 1.5);
+            if (Minimap.visible(mc) && mc.gui.screen() == null) Data.tick(worldName(mc)); // the minimap keeps the players fresh too
         });
+        HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("beezzmap", "minimap"), (g, delta) -> Minimap.draw(g));
     }
 
     static void save() {

@@ -43,3 +43,8 @@ fabricApi {
         eula = true
     }
 }
+
+// ./gradlew runClientGameTest -PextraMods=<folder>: the same test with a player's own mods loaded next to this one
+if (project.hasProperty("extraMods")) {
+    tasks.named("runClientGameTest") { jvmArgs "-Dfabric.addMods=" + file(project.property("extraMods")).absolutePath }
+}
