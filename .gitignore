@@ -1,0 +1,8 @@
+build/
+.gradle/
+run/
+*.log
+.idea/
+*.iml
+__pycache__/
+dist/
