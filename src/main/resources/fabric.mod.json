@@ -3,12 +3,14 @@
   "id": "beezzmap",
   "version": "${version}",
   "name": "BeezzMap",
-  "description": "The live world map of the BeezzLand server right in the game: map tiles, public places, players online with their heads, fog of war. Press M. Data comes from the public map at play.beezzland.com.",
+  "description": "A world map and minimap with markers, screenshots, a ruler, drawings, cave mode and 8 designs. On BeezzLand it is the server's own map from play.beezzland.com: the whole explored world, public places with screenshots, players online, fog of war, and your markers can be sent to the site's map.",
   "authors": [
-    "BeezzLand"
+    "erkinpaw"
   ],
   "contact": {
-    "homepage": "https://play.beezzland.com/map.html"
+    "homepage": "https://play.beezzland.com/map.html",
+    "sources": "https://github.com/erkinpaw/beezzmap",
+    "issues": "https://github.com/erkinpaw/beezzmap/issues"
   },
   "license": "MIT",
   "icon": "assets/beezzmap/icon.png",

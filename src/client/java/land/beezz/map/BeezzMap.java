@@ -1,102 +1,154 @@
 package land.beezz.map;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-import com.mojang.blaze3d.platform.InputConstants;
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientChunkEvents;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
-import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.client.KeyMapping;
+import net.fabricmc.fabric.api.client.rendering.v1.hud.VanillaHudElements;
+import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
+import net.fabricmc.fabric.api.client.screen.v1.Screens;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.multiplayer.ServerData;
+import net.minecraft.client.gui.components.AbstractWidget;
+import net.minecraft.client.gui.screens.TitleScreen;
 import net.minecraft.resources.Identifier;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import land.beezz.map.data.ModConfig;
+import land.beezz.map.gui.Paper;
+import land.beezz.map.gui.SettingsScreen;
+import land.beezz.map.gui.T;
+import land.beezz.map.gui.Theme;
+import land.beezz.map.gui.TitleButton;
+import land.beezz.map.gui.WorldsScreen;
+import land.beezz.map.gui.MapScreen;
+import land.beezz.map.gui.MinimapHud;
+import land.beezz.map.map.MapManager;
+import land.beezz.map.site.Site;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.util.List;
 
 /**
- * BeezzMap: M opens the live world map of the BeezzLand server, the same one as play.beezzland.com/map.html: Pl3xMap's
- * tiles painted the site's way, the public places, everyone online with their heads, the fog of war. On BeezzLand itself
- * the map also shows where you are, live from the game.
+ * BeezzMap: a world map and minimap with markers, screenshots, a ruler, drawings, caves and 8 designs (it grew out of
+ * the MapMinecraft mod, github.com/erkinpaw/atlasmap). On BeezzLand it is the server's own map, the one on
+ * play.beezzland.com/map.html: the whole explored world, the public places, the players online, the fog of war; and a
+ * marker can go to that map for everyone.
  */
-public final class BeezzMap implements ClientModInitializer {
-    public static final Logger LOG = LoggerFactory.getLogger("BeezzMap");
-    static final String VERSION = FabricLoader.getInstance().getModContainer("beezzmap")
+public class BeezzMap implements ClientModInitializer {
+    public static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger("BeezzMap");
+    public static final String VERSION = net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer("beezzmap")
             .map(c -> c.getMetadata().getVersion().getFriendlyString()).orElse("dev");
-    public static KeyMapping openKey, minimapKey, zoomInKey, zoomOutKey;
-
-    /** Kept between games in config/beezzmap.json. */
-    static final class Config {
-        String theme = "beezz";
-        boolean fog = true;
-        boolean showPlaces = true, showMarks = true, showPlayers = true;
-        boolean minimap = true;
-        int minimapSize = 1; // 0 small, 1 medium, 2 large
-        double minimapZoom = 1; // window pixels per block
-    }
-
-    static Config config = new Config();
-    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-    private static Path configFile() {
-        return FabricLoader.getInstance().getConfigDir().resolve("beezzmap.json");
-    }
 
     @Override
     public void onInitializeClient() {
-        try {
-            if (Files.exists(configFile())) config = GSON.fromJson(Files.readString(configFile()), Config.class);
-            if (config == null) config = new Config();
-        } catch (Exception e) {
-            LOG.warn("BeezzMap: config unreadable, using defaults", e);
-        }
-        KeyMapping.Category cat = KeyMapping.Category.register(Identifier.fromNamespaceAndPath("beezzmap", "main"));
-        openKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.beezzmap.open", InputConstants.KEY_M, cat));
-        minimapKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.beezzmap.minimap", InputConstants.KEY_N, cat));
-        zoomInKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.beezzmap.zoomin", InputConstants.KEY_EQUALS, cat));
-        zoomOutKey = KeyMappingHelper.registerKeyMapping(new KeyMapping("key.beezzmap.zoomout", InputConstants.KEY_MINUS, cat));
-        ClientTickEvents.END_CLIENT_TICK.register(mc -> {
-            while (openKey.consumeClick()) {
-                if (mc.gui.screen() == null) mc.gui.setScreen(MapScreen.open(mc));
+        ModKeys.register();
+
+        ClientPlayConnectionEvents.JOIN.register((handler, sender, mc) -> mc.execute(() -> MapManager.onJoin(mc)));
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, mc) -> mc.execute(MapManager::onDisconnect));
+        ClientLifecycleEvents.CLIENT_STOPPING.register(mc -> MapManager.onDisconnect());
+        ClientChunkEvents.CHUNK_LOAD.register(MapManager::onChunkLoad);
+        ClientTickEvents.END_CLIENT_TICK.register(this::onTick);
+
+        HudElementRegistry.attachElementBefore(VanillaHudElements.CHAT,
+                Identifier.fromNamespaceAndPath("beezzmap", "minimap"), new MinimapHud());
+
+        ScreenEvents.AFTER_INIT.register((mc, screen, w, h) -> {
+            loadTheme();
+            if (screen instanceof TitleScreen) {
+                addAtlasButton(screen, w);
             }
-            while (minimapKey.consumeClick()) {
-                config.minimap = !config.minimap;
-                save();
-            }
-            while (zoomInKey.consumeClick()) Minimap.zoom(1.5);
-            while (zoomOutKey.consumeClick()) Minimap.zoom(1 / 1.5);
-            if (Minimap.visible(mc) && mc.gui.screen() == null) Data.tick(worldName(mc)); // the minimap keeps the players fresh too
         });
-        HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("beezzmap", "minimap"), (g, delta) -> Minimap.draw(g));
     }
 
-    static void save() {
-        try {
-            Files.writeString(configFile(), GSON.toJson(config));
-        } catch (Exception e) {
-            LOG.warn("BeezzMap: config not saved", e);
+    private static boolean themeLoaded;
+
+    /** Applies the saved UI design once the game directory (and so the config) is available. */
+    private static void loadTheme() {
+        if (!themeLoaded) {
+            themeLoaded = true;
+            Paper.apply(Theme.byId(ModConfig.get().theme));
         }
     }
 
-    /** Playing on BeezzLand right now: then the map shows the player's own live position. */
-    static boolean onBeezzLand(Minecraft mc) {
-        if (Boolean.getBoolean("beezzmap.pretend")) return true; // the game test, in a local world
-        ServerData s = mc.getCurrentServer();
-        return s != null && s.ip != null && s.ip.toLowerCase().contains("beezzland");
+    private void onTick(Minecraft mc) {
+        loadTheme();
+        MapManager.tick(mc);
+        ModConfig cfg = ModConfig.get();
+        while (ModKeys.OPEN_MAP.consumeClick()) {
+            if (mc.gui.screen() == null) {
+                MapScreen.openLive(mc);
+            }
+        }
+        while (ModKeys.MARKER_LIST.consumeClick()) {
+            if (mc.gui.screen() == null) {
+                MapScreen s = MapScreen.openLive(mc);
+                if (s != null) {
+                    s.openMarkerList();
+                }
+            }
+        }
+        while (ModKeys.NEW_MARKER.consumeClick()) {
+            if (mc.gui.screen() == null) {
+                MapScreen s = MapScreen.openLive(mc);
+                if (s != null) {
+                    s.newMarkerAtPlayer();
+                }
+            }
+        }
+        while (ModKeys.TOGGLE_MINIMAP.consumeClick()) {
+            cfg.minimapEnabled = !cfg.minimapEnabled;
+            cfg.save();
+        }
+        while (ModKeys.MINIMAP_ZOOM_IN.consumeClick()) {
+            cfg.zoomMinimap(1.25f);
+            cfg.save();
+        }
+        while (ModKeys.MINIMAP_ZOOM_OUT.consumeClick()) {
+            cfg.zoomMinimap(1 / 1.25f);
+            cfg.save();
+        }
+        while (ModKeys.CAVES.consumeClick()) {
+            cfg.caveMode = (cfg.caveMode + 1) % 3;
+            cfg.save();
+            if (mc.player != null) {
+                mc.player.sendOverlayMessage(T.tr("caves.now", T.tr(new String[]{"off", "on", "caves.auto"}[cfg.caveMode])));
+            }
+        }
+        // on BeezzLand the minimap shows the site's map: keep it fresh (the open map screen does it for its own view)
+        if (cfg.minimapEnabled && mc.level != null && Site.isBeezz(MapManager.live()) && !(mc.gui.screen() instanceof MapScreen)) {
+            Site.tick(mc.level.dimension().identifier().toString());
+        }
+        // in-map shortcuts are handled by the map screen itself
+        ModKeys.RULER.consumeClick();
+        ModKeys.EDITOR.consumeClick();
+        ModKeys.TOGGLE_DRAWINGS.consumeClick();
     }
 
-    /** The server's name of the world the player is in (Paper names its dimensions after the world folders). */
-    static String worldName(Minecraft mc) {
-        if (mc.level == null) return null;
-        String path = mc.level.dimension().identifier().getPath();
-        return switch (path) {
-            case "overworld" -> "world";
-            case "the_nether" -> "world_nether";
-            case "the_end" -> "world_the_end";
-            default -> path;
-        };
+    private static void addAtlasButton(net.minecraft.client.gui.screens.Screen screen, int width) {
+        List<AbstractWidget> widgets = Screens.getWidgets(screen);
+        AbstractWidget anchor = null;
+        for (AbstractWidget w : widgets) {
+            if (w.getWidth() >= 150 && (anchor == null || w.getY() < anchor.getY())) {
+                anchor = w;
+            }
+        }
+        int x = anchor != null ? anchor.getX() + anchor.getWidth() + 4 : width / 2 + 104;
+        int y = anchor != null ? anchor.getY() : 100;
+        int step = 24;
+        if (overlaps(widgets, x, y) || overlaps(widgets, x + step, y)) {
+            x = anchor != null ? anchor.getX() - 24 : width / 2 - 124;
+            step = -24;
+        }
+        Minecraft mc = Minecraft.getInstance();
+        widgets.add(new TitleButton(x, y, "map", T.tr("atlas.button"), () -> mc.gui.setScreen(new WorldsScreen(screen))));
+        widgets.add(new TitleButton(x + step, y, "gear", T.tr("tool.settings"), () -> mc.gui.setScreen(new SettingsScreen(screen))));
+    }
+
+    private static boolean overlaps(List<AbstractWidget> widgets, int x, int y) {
+        for (AbstractWidget w : widgets) {
+            if (x < w.getX() + w.getWidth() && x + 20 > w.getX() && y < w.getY() + w.getHeight() && y + 20 > w.getY()) {
+                return true;
+            }
+        }
+        return false;
     }
 }

@@ -4,5 +4,5 @@
   "version": "1.0.0",
   "name": "BeezzMap test",
   "environment": "client",
-  "entrypoints": { "fabric-client-gametest": ["land.beezz.map.MapTest"] }
+  "entrypoints": { "fabric-client-gametest": ["land.beezz.map.MapClientGameTest", "land.beezz.map.MapTest"] }
 }

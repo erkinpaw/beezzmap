@@ -20,6 +20,13 @@ dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+    // the site keeps screenshots as WebP, which neither Java nor the game reads: TwelveMonkeys' pure Java decoder, inside the jar
+    for (String lib : ["com.twelvemonkeys.imageio:imageio-webp:3.12.0", "com.twelvemonkeys.imageio:imageio-core:3.12.0",
+                       "com.twelvemonkeys.imageio:imageio-metadata:3.12.0", "com.twelvemonkeys.common:common-lang:3.12.0",
+                       "com.twelvemonkeys.common:common-io:3.12.0", "com.twelvemonkeys.common:common-image:3.12.0"]) {
+        implementation lib
+        include lib
+    }
 }
 
 processResources {
@@ -46,5 +53,6 @@ fabricApi {
 
 // ./gradlew runClientGameTest -PextraMods=<folder>: the same test with a player's own mods loaded next to this one
 if (project.hasProperty("extraMods")) {
-    tasks.named("runClientGameTest") { jvmArgs "-Dfabric.addMods=" + file(project.property("extraMods")).absolutePath }
+    // (only the BeezzLand test then: the other one clicks by fixed coordinates, which other mods' buttons can move)
+    tasks.named("runClientGameTest") { jvmArgs "-Dfabric.addMods=" + file(project.property("extraMods")).absolutePath, "-Dbeezzmap.onlySite=true" }
 }
