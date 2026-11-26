@@ -563,10 +563,10 @@ public class MapScreen extends Screen {
             view.drawTiles(g, caves);
         } else {
             view.drawBackground(g);
-            view.drawTiles(g, layer);
+            view.drawTiles(g, layer, siteMap ? dim : null);
             if (siteMap) {
                 view.drawSiteTiles(g, dim);
-                if (cfg.siteFog) {
+                { // the fog of war is always there, as on the site
                     List<double[]> open = new ArrayList<>();
                     for (Data.Player p : Data.players) {
                         if (Site.dim(p.world()).equals(dim)) {

@@ -58,6 +58,9 @@ public final class Site {
             case "minecraft:overworld" -> "world";
             case "minecraft:the_nether" -> "world_nether";
             case "minecraft:the_end" -> "world_the_end";
+            // BeezzWorlds makes the farm worlds as minecraft:farm, Pl3xMap and the site name them by folder
+            case "minecraft:farm" -> "world_minecraft_farm";
+            case "minecraft:farm_nether" -> "world_minecraft_farm_nether";
             default -> dim.substring(dim.indexOf(':') + 1);
         };
     }
@@ -67,13 +70,16 @@ public final class Site {
             case "world" -> "minecraft:overworld";
             case "world_nether" -> "minecraft:the_nether";
             case "world_the_end" -> "minecraft:the_end";
+            case "world_minecraft_farm" -> "minecraft:farm";
+            case "world_minecraft_farm_nether" -> "minecraft:farm_nether";
             default -> "minecraft:" + world;
         };
     }
 
     /** Does the site draw this dimension at all? */
     public static boolean hasWorld(String dim) {
-        return Data.world(world(dim)) != null;
+        // the known worlds count before settings.json has come: else the first frames show the mod's own picture, unfogged
+        return Data.KNOWN.contains(world(dim)) || Data.world(world(dim)) != null;
     }
 
     /** The site's tile colours to match the design: parchment for the papyrus one, the site's own look otherwise. */

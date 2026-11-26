@@ -64,7 +64,7 @@ public class MinimapLayoutScreen extends Screen {
 
         // the panel goes to the other half of the screen from the minimap
         int pw = Math.min(width - 16, 250);
-        int ph = 118;
+        int ph = 136;
         int px = (width - pw) / 2;
         int py = r[1] + r[2] / 2 < height / 2 ? height - ph - 30 : 30;
         Paper.panel(g, px, py, pw, ph);
@@ -78,6 +78,11 @@ public class MinimapLayoutScreen extends Screen {
         y = row(g, mx, my, px, y, pw, T.s("layout.size", cfg.minimapPx), () -> resize(-20), () -> resize(20));
         y = row(g, mx, my, px, y, pw, T.s("layout.zoom", zoomText(cfg.minimapZoomF)), () -> zoom(1 / 1.25f), () -> zoom(1.25f));
         y = row(g, mx, my, px, y, pw, T.s("layout.opacity", Math.round(cfg.minimapOpacity * 100)), () -> opacity(-0.1f), () -> opacity(0.1f));
+        Runnable shape = () -> {
+            cfg.minimapRound = !cfg.minimapRound;
+            cfg.save();
+        };
+        y = row(g, mx, my, px, y, pw, T.s("settings.shape", T.s(cfg.minimapRound ? "shape.round" : "shape.square")), shape, shape);
         int bw = (pw - 24) / 2;
         boolean h1 = Paper.inside(mx, my, px + 8, y + 2, bw, 16);
         Paper.iconTextButton(g, font, Paper.tool("undo"), T.tr("layout.reset"), px + 8, y + 2, bw, 16, h1, true);

@@ -77,8 +77,9 @@ public final class T {
             case "minecraft:overworld" -> s("dim.overworld");
             case "minecraft:the_nether" -> s("dim.nether");
             case "minecraft:the_end" -> s("dim.end");
-            case "minecraft:world_minecraft_farm" -> s("dim.world_minecraft_farm");
-            case "minecraft:world_minecraft_farm_nether" -> s("dim.world_minecraft_farm_nether");
+            case "minecraft:farm", "minecraft:world_minecraft_farm" -> s("dim.world_minecraft_farm");
+            case "minecraft:farm_nether", "minecraft:world_minecraft_farm_nether" -> s("dim.world_minecraft_farm_nether");
+            case "minecraft:duels" -> s("dim.duels");
             default -> {
                 int i = dim.indexOf(':');
                 yield i >= 0 ? dim.substring(i + 1) : dim;

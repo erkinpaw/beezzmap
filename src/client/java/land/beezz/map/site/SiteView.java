@@ -48,14 +48,17 @@ public final class SiteView {
         drawLevel(g, dw, want, true);
     }
 
-    /** Is the site's tile over this block painted already (then the mod's own picture under it is not needed)? */
-    public boolean covers(double bx, double bz) {
+    /**
+     * May the mod's own picture show at this block? Only where the site has no tile at all (a 404: nobody's map there
+     * yet). While a site tile loads, or after it was dropped from memory, the site's coarser picture shows instead:
+     * otherwise the mod's other design blinks through.
+     */
+    public boolean localAllowed(double bx, double bz) {
         Data.World dw = Data.world(world);
-        if (dw == null) return false;
+        if (dw == null) return true;
         int n = want();
         double size = Tiles.SIZE << n;
-        Tiles.Tile t = Tiles.get(Site.tileTheme(), dw.name(), dw.renderer(), MAX_OUT, n, (int) Math.floor(bx / size), (int) Math.floor(bz / size), false);
-        return t != null && t.tex != null;
+        return Tiles.missing(Tiles.get(Site.tileTheme(), dw.name(), dw.renderer(), MAX_OUT, n, (int) Math.floor(bx / size), (int) Math.floor(bz / size), false));
     }
 
     private void drawLevel(GuiGraphicsExtractor g, Data.World dw, int n, boolean load) {
@@ -80,7 +83,7 @@ public final class SiteView {
     /** extraOpen: chunks open right now although the fog file doesn't know it yet (players standing there). */
     public void drawFog(GuiGraphicsExtractor g, int color, Iterable<double[]> extraOpen) {
         Map<String, byte[]> fog = Data.fogOf(world);
-        if (fog == null) return;
+        if (fog == null) fog = Map.of(); // not loaded (yet): all of it is fog, but for the players standing there
         if (alpha < 255) color = (((color >>> 24) * alpha / 255) << 24) | (color & 0xFFFFFF);
         Map<String, TreeSet<Integer>> live = new HashMap<>();
         for (double[] p : extraOpen) openAround(live, (int) Math.floor(p[0]) >> 4, (int) Math.floor(p[1]) >> 4);

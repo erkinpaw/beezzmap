@@ -267,7 +267,6 @@
   "beezzmap.settings.site_tiles": "Весь мир с сайта: %s",
   "beezzmap.settings.site_places": "Места с сайта: %s",
   "beezzmap.settings.site_players": "Игроки онлайн: %s",
-  "beezzmap.settings.site_fog": "Туман войны: %s",
   "beezzmap.settings.site_logout": "Выйти с сайта (%s)",
   "beezzmap.layout.title": "Миникарта",
   "beezzmap.layout.hint": "Тяни миникарту мышью куда угодно, угол — размер, колесо — масштаб.",
@@ -319,5 +318,9 @@
   "beezzmap.site.err.bad_world": "Этого мира нет на карте сайта.",
   "beezzmap.site.err.bad_coords": "Координаты вне мира (Y от -64 до 320).",
   "beezzmap.dim.world_minecraft_farm": "Мир ферм",
-  "beezzmap.dim.world_minecraft_farm_nether": "Незер мира ферм"
+  "beezzmap.dim.world_minecraft_farm_nether": "Незер мира ферм",
+  "beezzmap.settings.shape": "Форма: %s",
+  "beezzmap.shape.round": "круг",
+  "beezzmap.shape.square": "квадрат",
+  "beezzmap.dim.duels": "Дуэли"
 }

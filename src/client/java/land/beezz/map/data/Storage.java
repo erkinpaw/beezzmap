@@ -99,9 +99,32 @@ public final class Storage {
             try (Writer w = Files.newBufferedWriter(tmp, StandardCharsets.UTF_8)) {
                 GSON.toJson(value, w);
             }
-            Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            replace(tmp, file);
         } catch (IOException e) {
             LOG.warn("Failed to write {}", file, e);
+        }
+    }
+
+    /** Puts tmp in place of file. Windows refuses for a moment while something else has the file open: try again. */
+    private static void replace(Path tmp, Path file) throws IOException {
+        for (int i = 0; ; i++) {
+            try {
+                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                return;
+            } catch (IOException e) {
+                if (i >= 8) {
+                    // last resort: not atomic, but the markers are saved
+                    Files.copy(tmp, file, StandardCopyOption.REPLACE_EXISTING);
+                    Files.deleteIfExists(tmp);
+                    return;
+                }
+                try {
+                    Thread.sleep(60L * (i + 1));
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+            }
         }
     }
 
@@ -113,7 +136,7 @@ public final class Storage {
                 Files.createDirectories(file.getParent());
                 Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
                 Files.writeString(tmp, json, StandardCharsets.UTF_8);
-                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                replace(tmp, file);
             } catch (IOException e) {
                 LOG.warn("Failed to write {}", file, e);
             }

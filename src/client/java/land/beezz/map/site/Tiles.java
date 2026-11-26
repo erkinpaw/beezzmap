@@ -19,10 +19,20 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class Tiles {
     public static final int SIZE = 512;
-    private static final int MAX = 120; // textures kept; a tile is 1 MB of video memory
+    private static final int MAX = 200; // textures kept; a tile is 1 MB of video memory
+    private static final java.util.concurrent.ExecutorService POOL = java.util.concurrent.Executors.newFixedThreadPool(4, r -> {
+        Thread t = new Thread(r, "BeezzMap tiles");
+        t.setDaemon(true);
+        return t;
+    });
     private static final int WATER = 0x4040FF;
     private static final int DEEP = 42, SHALLOW = 120; // brightness of the renderer's water at 14+ blocks deep and at the shore
     private static final int[] PARCH = {234, 216, 174};
+
+    /** Is there a site tile there that will (or did) paint? false only when the site has nothing for that spot. */
+    public static boolean missing(Tile t) {
+        return t != null && t.failed && t.tex == null;
+    }
 
     public static final class Tile {
         public volatile Identifier tex; // null until painted and uploaded
@@ -66,7 +76,7 @@ public final class Tiles {
         tiles.put(key, nt);
         evict();
         loading.incrementAndGet();
-        Data.NET.execute(() -> {
+        POOL.execute(() -> {
             try {
                 int[] argb = fetch(theme, world, renderer, maxOut, n, x, z);
                 if (argb == null) {
@@ -85,7 +95,6 @@ public final class Tiles {
                     nt.tex = id;
                 });
             } catch (Exception e) {
-                nt.failed = true;
                 land.beezz.map.BeezzMap.LOG.debug("tile {} failed", key, e);
                 // a network hiccup: forget it, so it is asked for again later
                 upload.add(() -> {

@@ -264,6 +264,23 @@ public class MapTest implements FabricClientGameTest {
             ctx.getInput().pressKey(InputConstants.KEY_ESCAPE);
             ctx.waitTicks(30);
             ctx.takeScreenshot("bz-12-minimap-moved-see-through");
+            // a round minimap, back in the corner, opaque
+            ctx.runOnClient(mc -> {
+                ModConfig c = ModConfig.get();
+                c.minimapFree = false;
+                c.minimapPx = 140;
+                c.minimapOpacity = 1f;
+                c.minimapRound = true;
+                c.save();
+            });
+            ctx.waitTicks(40);
+            ctx.takeScreenshot("bz-13-minimap-round");
+            check(ctx.computeOnClient(mc -> "world_minecraft_farm".equals(Site.world("minecraft:farm"))
+                    && "minecraft:farm_nether".equals(Site.dim("world_minecraft_farm_nether"))), "the farm worlds match the site's");
+            ctx.runOnClient(mc -> {
+                ModConfig.get().minimapRound = false;
+                ModConfig.get().save();
+            });
             ctx.getInput().pressKey(InputConstants.KEY_N);
             ctx.waitTicks(3);
             check(ctx.computeOnClient(mc -> !ModConfig.get().minimapEnabled), "N hides the minimap");

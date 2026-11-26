@@ -45,39 +45,62 @@ public final class Data {
         t.setDaemon(true);
         return t;
     });
-    private static final AtomicBoolean busy = new AtomicBoolean();
-    private static long lastPlayers, lastPoints, lastFog;
-    private static final Map<String, Long> fogAsked = new HashMap<>();
+    /** The sync's own threads: it never waits behind the tiles (those have their pool in Tiles). */
+    private static final ExecutorService SYNC = Executors.newFixedThreadPool(3, r -> {
+        Thread t = new Thread(r, "BeezzMap sync");
+        t.setDaemon(true);
+        return t;
+    });
+
+    /** One kind of data: asked again after every (ok) or retry (failed) ms, never twice at once. */
+    private static final class Job {
+        final long every, retry;
+        final AtomicBoolean running = new AtomicBoolean();
+        volatile long due;
+
+        Job(long every, long retry) {
+            this.every = every;
+            this.retry = retry;
+        }
+
+        void run(Loader l) {
+            if (System.currentTimeMillis() < due || !running.compareAndSet(false, true)) return;
+            SYNC.execute(() -> {
+                try {
+                    l.load();
+                    due = System.currentTimeMillis() + every;
+                    down = false;
+                } catch (Exception e) {
+                    due = System.currentTimeMillis() + retry;
+                    down = true;
+                    land.beezz.map.BeezzMap.LOG.debug("BeezzMap sync failed", e);
+                } finally {
+                    running.set(false);
+                }
+            });
+        }
+    }
+
+    private interface Loader {
+        void load() throws Exception;
+    }
+
+    private static final Job palette = new Job(Long.MAX_VALUE / 4, 10_000);
+    private static final Job settings = new Job(2000, 4000);
+    private static final Job places = new Job(60_000, 15_000);
+    private static final Map<String, Job> fogJobs = new java.util.concurrent.ConcurrentHashMap<>();
 
     private Data() {}
 
-    /** Called every client tick while the map is open. */
+    /** Called every client tick while the map or the minimap shows BeezzLand. */
     public static void tick(String world) {
-        long now = System.currentTimeMillis();
-        if (busy.get()) return;
-        boolean players = now - lastPlayers >= 2000, pts = now - lastPoints >= 60_000;
-        Long asked = fogAsked.get(world);
-        boolean fogDue = asked == null || now - asked >= 600_000;
-        if (!players && !pts && !fogDue && blockColor != null) return;
-        busy.set(true);
-        if (players) lastPlayers = now;
-        if (pts) lastPoints = now;
-        if (fogDue) fogAsked.put(world, now);
-        NET.execute(() -> {
-            try {
-                if (blockColor == null) loadPalette();
-                if (players) loadSettings();
-                if (pts) loadPoints();
-                if (fogDue) loadFog(world);
-                down = false;
-            } catch (Exception e) {
-                down = true;
-                lastPlayers = System.currentTimeMillis(); // try again in two seconds, not every tick
-                land.beezz.map.BeezzMap.LOG.debug("BeezzMap sync failed", e);
-            } finally {
-                busy.set(false);
-            }
-        });
+        if (blockColor == null) palette.run(Data::loadPalette);
+        settings.run(Data::loadSettings);
+        places.run(Data::loadPoints);
+        if (world != null && KNOWN.contains(world)) {
+            // the fog file is rewritten every 10 minutes; a failed try comes again in 15 s (no fog known = all closed)
+            fogJobs.computeIfAbsent(world, w -> new Job(600_000, 15_000)).run(() -> loadFog(world));
+        }
     }
 
     public static World world(String name) {
@@ -114,7 +137,7 @@ public final class Data {
 
     /** Forces the places to come again at the next tick (a marker was just sent). */
     public static void refreshPoints() {
-        lastPoints = 0;
+        places.due = 0;
     }
 
     private static void loadPoints() throws Exception {
@@ -143,8 +166,7 @@ public final class Data {
             for (Map.Entry<String, JsonElement> e : r.entrySet()) regions.put(e.getKey(), Base64.getDecoder().decode(e.getValue().getAsString()));
         }
         synchronized (fog) {
-            if (s == null) fog.remove(world);
-            else fog.put(world, regions);
+            fog.put(world, regions); // no file: nobody has been anywhere yet, all of it is fog
         }
         fogVersion++;
     }

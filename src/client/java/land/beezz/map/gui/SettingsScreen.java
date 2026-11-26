@@ -64,7 +64,7 @@ public class SettingsScreen extends Screen {
         boolean twoCols = pw >= 380;
         int colW = twoCols ? (pw - 30) / 2 : pw - 20;
         int themesH = 12 + (Theme.ALL.size() + 1) / 2 * (TILE_H + 4);
-        int optionsH = 12 + 8 * ROW + 16 + 5 * ROW + 16 + 2 * ROW + 32;
+        int optionsH = 12 + 9 * ROW + 16 + 4 * ROW + 16 + 2 * ROW + 32;
         int contentH = twoCols ? Math.max(themesH, optionsH) : themesH + 8 + optionsH;
         int ph = Math.min(height - 16, contentH + 54);
         int py = (height - ph) / 2;
@@ -157,6 +157,7 @@ public class SettingsScreen extends Screen {
             cfg.minimapCorner = cfg.minimapFree ? cfg.minimapCorner : (cfg.minimapCorner + 1) % 4;
             cfg.minimapFree = false;
         });
+        y = option(g, mx, my, x, y, w, top, bottom, T.tr("settings.shape", T.tr(cfg.minimapRound ? "shape.round" : "shape.square")), () -> cfg.minimapRound = !cfg.minimapRound);
         y = option(g, mx, my, x, y, w, top, bottom, T.tr("settings.opacity", Math.round(cfg.minimapOpacity * 100)), () -> cfg.minimapOpacity = cfg.minimapOpacity <= 0.25f ? 1f : Math.round((cfg.minimapOpacity - 0.2f) * 10) / 10f);
         y = option(g, mx, my, x, y, w, top, bottom, T.tr("settings.coords", onOff(cfg.minimapCoords)), () -> cfg.minimapCoords = !cfg.minimapCoords);
         y = option(g, mx, my, x, y, w, top, bottom, T.tr("settings.mm_markers", onOff(cfg.minimapMarkers)), () -> cfg.minimapMarkers = !cfg.minimapMarkers);
@@ -171,7 +172,6 @@ public class SettingsScreen extends Screen {
         y = option(g, mx, my, x, y, w, top, bottom, T.tr("settings.site_tiles", onOff(cfg.siteTiles)), () -> cfg.siteTiles = !cfg.siteTiles);
         y = option(g, mx, my, x, y, w, top, bottom, T.tr("settings.site_places", onOff(cfg.sitePlaces)), () -> cfg.sitePlaces = !cfg.sitePlaces);
         y = option(g, mx, my, x, y, w, top, bottom, T.tr("settings.site_players", onOff(cfg.sitePlayers)), () -> cfg.sitePlayers = !cfg.sitePlayers);
-        y = option(g, mx, my, x, y, w, top, bottom, T.tr("settings.site_fog", onOff(cfg.siteFog)), () -> cfg.siteFog = !cfg.siteFog);
         if (land.beezz.map.site.Site.session() != null) {
             y = option(g, mx, my, x, y, w, top, bottom, T.tr("settings.site_logout", minecraft.getUser().getName()), land.beezz.map.site.Site::logout);
         }

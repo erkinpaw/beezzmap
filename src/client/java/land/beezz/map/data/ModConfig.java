@@ -26,6 +26,8 @@ public class ModConfig {
     public float minimapFx = 1f;
     public float minimapFy = 0f;
     public boolean minimapCoords = true;
+    /** A round minimap instead of the square one. */
+    public boolean minimapRound = false;
     public boolean minimapMarkers = true;
     public boolean drawingsVisible = true;
     public boolean markersVisible = true;
@@ -41,7 +43,6 @@ public class ModConfig {
     public boolean siteTiles = true;
     public boolean sitePlaces = true;
     public boolean sitePlayers = true;
-    public boolean siteFog = true;
 
     private static ModConfig instance;
 

@@ -267,7 +267,6 @@
   "beezzmap.settings.site_tiles": "Whole world from the site: %s",
   "beezzmap.settings.site_places": "Places from the site: %s",
   "beezzmap.settings.site_players": "Players online: %s",
-  "beezzmap.settings.site_fog": "Fog of war: %s",
   "beezzmap.settings.site_logout": "Log out of the site (%s)",
   "beezzmap.layout.title": "Minimap",
   "beezzmap.layout.hint": "Drag the minimap anywhere, its corner for the size, the wheel zooms.",
@@ -319,5 +318,9 @@
   "beezzmap.site.err.bad_world": "This world isn't on the site's map.",
   "beezzmap.site.err.bad_coords": "The coordinates are outside the world (Y from -64 to 320).",
   "beezzmap.dim.world_minecraft_farm": "Farm world",
-  "beezzmap.dim.world_minecraft_farm_nether": "Farm world nether"
+  "beezzmap.dim.world_minecraft_farm_nether": "Farm world nether",
+  "beezzmap.settings.shape": "Shape: %s",
+  "beezzmap.shape.round": "round",
+  "beezzmap.shape.square": "square",
+  "beezzmap.dim.duels": "Duels"
 }

@@ -68,6 +68,30 @@ public class MapView {
     }
 
     private final SiteView site = new SiteView();
+    /** A round minimap: things outside the circle are clamped to its edge, not to the square's. */
+    public boolean round;
+
+    /** Is this point outside the view (the circle, for a round one), keeping a margin of m? */
+    private boolean outside(float px, float py, float m) {
+        if (!round) {
+            return px < x || py < y || px >= x + w || py >= y + h;
+        }
+        float r = w / 2f - m;
+        return Math.hypot(px - (x + w / 2f), py - (y + h / 2f)) > r;
+    }
+
+    /** The point moved onto the view's edge (inside it by m). */
+    private float[] clamp(float px, float py, float m) {
+        if (!round) {
+            return new float[]{Math.max(x + m, Math.min(x + w - m, px)), Math.max(y + m, Math.min(y + h - m, py))};
+        }
+        float cx = x + w / 2f;
+        float cy = y + h / 2f;
+        double d = Math.hypot(px - cx, py - cy);
+        float r = w / 2f - m;
+        return d <= r || d == 0 ? new float[]{px, py} : new float[]{(float) (cx + (px - cx) * r / d), (float) (cy + (py - cy) * r / d)};
+    }
+
     /** 0…255: tiles, fog and heads fade with it (the minimap's opacity). */
     public int alpha = 255;
 
@@ -124,15 +148,16 @@ public class MapView {
             }
             float px = sx(pos[0]);
             float py = sy(pos[1]);
-            boolean outside = px < x || py < y || px >= x + w || py >= y + h;
+            boolean outside = outside(px, py, round ? size / 2f : 0);
             int s = size;
             if (outside) {
                 if (!clampToEdge) {
                     continue;
                 }
                 s = Math.max(6, size * 3 / 4);
-                px = Math.max(x + s / 2f + 1, Math.min(x + w - s / 2f - 1, px));
-                py = Math.max(y + s / 2f + 1, Math.min(y + h - s / 2f - 1, py));
+                float[] c = clamp(px, py, s / 2f + 1);
+                px = c[0];
+                py = c[1];
             }
             int ix = Math.round(px - s / 2f);
             int iy = Math.round(py - s / 2f);
@@ -164,7 +189,7 @@ public class MapView {
         drawTiles(g, layer, null);
     }
 
-    /** The mod's own tiles; with skip, those the site already paints are left out (a see-through minimap). */
+    /** The mod's own tiles; with skipSiteDim, only where the site's map has nothing (it is the one picture on BeezzLand). */
     public void drawTiles(GuiGraphicsExtractor g, MapLayer layer, String skipSiteDim) {
         if (skipSiteDim != null) {
             site(skipSiteDim);
@@ -176,7 +201,7 @@ public class MapView {
         Matrix3x2fStack pose = g.pose();
         for (int rz = rz0; rz <= rz1; rz++) {
             for (int rx = rx0; rx <= rx1; rx++) {
-                if (skipSiteDim != null && site.covers((rx + 0.5) * MapTile.SIZE, (rz + 0.5) * MapTile.SIZE)) {
+                if (skipSiteDim != null && !site.localAllowed((rx + 0.5) * MapTile.SIZE, (rz + 0.5) * MapTile.SIZE)) {
                     continue;
                 }
                 MapTile t = layer.getForRender(rx, rz);
@@ -357,16 +382,17 @@ public class MapView {
             float px = sx(m.x + 0.5);
             float py = sy(m.z + 0.5);
             int s = size;
-            boolean outside = px < x || py < y || px >= x + w || py >= y + h;
+            boolean outside = outside(px, py, round ? size / 2f : 0);
             if (outside) {
                 if (!clampToEdge) {
-                    if (px < x - size || py < y - size || px > x + w + size || py > y + h + size) {
+                    if (round || px < x - size || py < y - size || px > x + w + size || py > y + h + size) {
                         continue;
                     }
                 } else {
                     s = Math.max(6, size * 2 / 3);
-                    px = Math.max(x + s / 2f, Math.min(x + w - s / 2f, px));
-                    py = Math.max(y + s / 2f, Math.min(y + h - s / 2f, py));
+                    float[] c = clamp(px, py, s / 2f);
+                    px = c[0];
+                    py = c[1];
                 }
             }
             int ix = Math.round(px - s / 2f);

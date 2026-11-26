@@ -167,7 +167,10 @@ public final class MapManager {
     private static void tickCaves(Minecraft mc, ClientLevel level, String dim, int pcx, int pcz) {
         ModConfig cfg = ModConfig.get();
         int y = mc.player.getBlockY();
+        // underground: no sky light where the eyes are (trees and the open air have it) and 8+ blocks above the head
+        net.minecraft.core.BlockPos eye = net.minecraft.core.BlockPos.containing(mc.player.getEyePosition());
         boolean under = !level.dimensionType().hasCeiling()
+                && level.getBrightness(net.minecraft.world.level.LightLayer.SKY, eye) <= 2
                 && level.getHeight(Heightmap.Types.MOTION_BLOCKING, mc.player.getBlockX(), mc.player.getBlockZ()) - y >= 8;
         // a second of being under (or out) before the map switches, so it doesn't flicker at a cave's mouth
         undergroundTicks = under ? Math.min(20, undergroundTicks + 1) : Math.max(0, undergroundTicks - 1);
